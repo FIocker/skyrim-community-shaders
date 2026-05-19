@@ -144,6 +144,62 @@ static bool IsChildOfNode(const RE::NiAVObject* object, const RE::NiNode* root)
 	return object == root;
 }
 
+static bool IsSameOrDescendantOf(const RE::NiAVObject* object, const RE::NiAVObject* root)
+{
+	if (!object || !root)
+		return false;
+
+	if (object == root)
+		return true;
+
+	for (auto parent = object->parent; parent; parent = parent->parent) {
+		if (parent == root)
+			return true;
+	}
+
+	return false;
+}
+
+static bool IsTemporaryFormID(RE::FormID formID)
+{
+	return (formID & 0xFF000000) == 0xFF000000;
+}
+
+static RE::TESObjectREFR* FindRefForWaterGeometry(const RE::NiAVObject* object)
+{
+	if (!object)
+		return nullptr;
+
+	if (const auto ref = RE::TESObjectREFR::FindReferenceFor3D(const_cast<RE::NiAVObject*>(object)))
+		return ref;
+
+	for (auto parent = object->parent; parent; parent = parent->parent) {
+		if (const auto ref = RE::TESObjectREFR::FindReferenceFor3D(parent))
+			return ref;
+	}
+
+	return nullptr;
+}
+
+static bool IsPlacedWaterOverlay(const RE::NiAVObject* object, const RE::NiNode* lodRoot = nullptr)
+{
+	if (!object || IsChildOfNode(object, lodRoot))
+		return false;
+
+	const auto ref = FindRefForWaterGeometry(object);
+	const auto base = ref ? ref->GetBaseObject() : nullptr;
+	if (!base)
+		return false;
+
+	// Keep engine-generated close water eligible for culling decisions;
+	// persistent statics/activators are local overlays.
+	if (IsTemporaryFormID(ref->formID) || IsTemporaryFormID(base->formID))
+		return false;
+
+	const auto formType = base->GetFormType();
+	return formType == RE::FormType::Activator || formType == RE::FormType::Static;
+}
+
 static RE::BSTriShape* SelectDuplicateWaterSystemShapeToRemove(RE::BSTriShape* existing, RE::BSTriShape* candidate, RE::NiNode* lodRoot)
 {
 	if (!existing)
@@ -180,6 +236,8 @@ static void RemoveDuplicateWaterSystemObjects(RE::TESWaterSystem* waterSystem, R
 		const auto shape = waterObject ? waterObject->shape.get() : nullptr;
 		if (!shape)
 			continue;
+		if (IsPlacedWaterOverlay(shape, lodRoot))
+			continue;
 
 		const auto key = GetWaterPositionKey(shape);
 		const auto [it, inserted] = shapeByPosition.try_emplace(key, shape);
@@ -203,9 +261,34 @@ static void RemoveDuplicateWaterSystemObjects(RE::TESWaterSystem* waterSystem, R
 	}
 }
 
+static bool HasRegisteredWaterObjectInCell(RE::TESWaterSystem* waterSystem, int32_t cellX, int32_t cellY, const RE::NiAVObject* ignoredObject)
+{
+	if (!waterSystem)
+		return false;
+
+	for (const auto& waterObject : waterSystem->waterObjects) {
+		const auto shape = waterObject ? waterObject->shape.get() : nullptr;
+		if (!shape || shape->GetAppCulled() || IsSameOrDescendantOf(shape, ignoredObject))
+			continue;
+
+		int32_t x, y;
+		Util::WorldToCell(shape->world.translate, x, y);
+		if (x != cellX || y != cellY)
+			continue;
+
+		if (IsPlacedWaterOverlay(shape))
+			continue;
+
+		return true;
+	}
+
+	return false;
+}
+
 static void CullWaterParentByGridCells(RE::NiNode* waterParent)
 {
 	const auto tes = globals::game::tes;
+	const auto waterSystem = globals::game::waterSystem;
 	if (!tes || !waterParent)
 		return;
 
@@ -214,7 +297,7 @@ static void CullWaterParentByGridCells(RE::NiNode* waterParent)
 			continue;
 		int32_t x, y;
 		Util::WorldToCell(child->world.translate, x, y);
-		const bool cull = ShouldCullAtCell(tes, x, y);
+		const bool cull = ShouldCullAtCell(tes, x, y) && HasRegisteredWaterObjectInCell(waterSystem, x, y, child.get());
 		child->SetAppCulled(cull);
 	}
 }
@@ -658,18 +741,30 @@ void UnifiedWater::BGSTerrainBlock_Detach::thunk(RE::BGSTerrainBlock* block)
 void UnifiedWater::BSWaterShader_SetupGeometry::thunk(RE::BSShader* waterShader, RE::BSRenderPass* pass)
 {
 	auto& uw = globals::features::unifiedWater;
+	const auto geometry = pass ? pass->geometry : nullptr;
+	RE::BSWaterShaderProperty* waterShaderProp = nullptr;
 
-	if (uw.flowmap) {
+	if (geometry) {
+		if (const auto prop = geometry->GetGeometryRuntimeData().shaderProperty.get(); prop && prop->GetRTTI() == globals::rtti::BSWaterShaderPropertyRTTI.get())
+			waterShaderProp = static_cast<RE::BSWaterShaderProperty*>(prop);
+	}
+
+	if (waterShaderProp) {
+		// Interior/exterior transitions can leave the cached water plane stale on overlapping water geometry.
+		waterShaderProp->plane.normal = RE::NiPoint3{ 0.0f, 0.0f, 1.0f };
+		waterShaderProp->plane.constant = geometry->world.translate.z;
+	}
+
+	if (uw.flowmap && geometry) {
 		// ObjectUV.xyz below, xy contains width and height, z contains mesh scale
 		// Previously flowmap size was in x, yz contained flowmap offset for water displacement mesh
 		*uw.gFlowMapSize = uw.flowmap->GetWidth();                                            // ObjectUV.x
 		uw.gDisplacementMeshFlowCellOffset->x = static_cast<float>(uw.flowmap->GetHeight());  // ObjectUV.y
-		uw.gDisplacementMeshFlowCellOffset->y = 1.0f - pass->geometry->local.scale;           // ObjectUV.z (counters 1 - x in SetupGeometry)
+		uw.gDisplacementMeshFlowCellOffset->y = 1.0f - geometry->local.scale;                 // ObjectUV.z (counters 1 - x in SetupGeometry)
 
-		if (const auto prop = pass->geometry->GetGeometryRuntimeData().shaderProperty.get(); prop && prop->GetRTTI() == globals::rtti::BSWaterShaderPropertyRTTI.get()) {
-			const auto waterShaderProp = static_cast<RE::BSWaterShaderProperty*>(prop);
+		if (waterShaderProp) {
 			int32_t x, y;
-			Util::WorldToCell(pass->geometry->world.translate, x, y);
+			Util::WorldToCell(geometry->world.translate, x, y);
 			// CellTexCoordOffset.xyzw below - applies to non-displacement water only
 			// xy is world cell flowmap based (0,0 is corner of flow map), zw is world cell
 			// Funky maths here to counter what's being done in SetupGeometry
