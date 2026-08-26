@@ -552,8 +552,6 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	if (SharedData::iblSettings.EnableIBL)
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
 #			endif
-}
-#		endif
 
 	diffuseColor += directionalAmbientColor;
 	diffuseColor += subsurfaceColor * albedo;
@@ -561,17 +559,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 
 	directionalAmbientColor *= albedo;
 
-#		if defined(SKYLIGHTING)
+#			if defined(SKYLIGHTING)
 	Skylighting::ApplySkylighting(diffuseColor, directionalAmbientColor, albedo, skylightingDiffuse);
-#		endif
+#			endif
 
 	specularColor += lightsSpecularColor;
-#		if defined(VANILLA_FRESNEL)
+#			if defined(VANILLA_FRESNEL)
 	if (!(SharedData::vanillaFresnelSettings.Enable && SharedData::vanillaFresnelSettings.EnableGGXOnGrass))
-#		endif
+#			endif
 		specularColor *= specColor.w * SharedData::grassLightingSettings.SpecularStrength;
 
-#		if defined(LIGHT_LIMIT_FIX) && defined(LLFDEBUG)
+#			if defined(LIGHT_LIMIT_FIX) && defined(LLFDEBUG)
 	if (SharedData::lightLimitFixSettings.EnableLightsVisualisation) {
 		if (SharedData::lightLimitFixSettings.LightsVisualisationMode == 0) {
 			diffuseColor.xyz = Color::TurboColormap(0);
@@ -590,12 +588,12 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	float3 normalVS = normalize(FrameBuffer::WorldToView(normal, false));
 
 	float3 reflectance = 0;
-#		if defined(DYNAMIC_CUBEMAPS) && defined(VANILLA_FRESNEL)
+#			if defined(DYNAMIC_CUBEMAPS) && defined(VANILLA_FRESNEL)
 	if (SharedData::vanillaFresnelSettings.Enable) {
 		float2 specularBDRF = BRDF::EnvBRDF(roughness, saturate(dot(viewDirection, normal)));
 		reflectance = F0 * specularBDRF.x + specularBDRF.y;
 	}
-#		endif
+#			endif
 
 	psout.Reflectance = float4(reflectance, 1);
 	psout.Albedo = float4(albedo, 1);
@@ -604,17 +602,17 @@ PS_OUTPUT main(PS_INPUT input, bool frontFace : SV_IsFrontFace)
 	psout.Specular = float4(specularColor, 1);
 	psout.Masks = float4(0, 0, Color::RGBToYCoCg(directionalAmbientColor).x, 0);
 	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, 0);
-#	endif
+#		endif
 	return psout;
 }
-#else
+#	else
 PS_OUTPUT main(PS_INPUT input)
 {
 	PS_OUTPUT psout;
 
-#	if defined(SKYLIGHTING_SHADOW_VIS)
+#		if defined(SKYLIGHTING_SHADOW_VIS)
 	float skylightingShadowVisibility = 1.0;
-#	endif
+#		endif
 
 	float4 baseColor = TexBaseSampler.SampleBias(SampBaseSampler, input.TexCoord.xy, SharedData::MipBias);
 
@@ -623,13 +621,13 @@ PS_OUTPUT main(PS_INPUT input)
 	if ((diffuseAlpha - AlphaTestRefRS) < 0) {
 		discard;
 	}
-#	endif  // RENDER_DEPTH || DO_ALPHA_TEST
+#		endif  // RENDER_DEPTH || DO_ALPHA_TEST
 
-#	if defined(RENDER_DEPTH)
+#		if defined(RENDER_DEPTH)
 	// Depth
 	psout.PS.xyz = input.Depth.xxx / input.Depth.yyy;
 	psout.PS.w = diffuseAlpha;
-#	else
+#		else
 	if (SharedData::lodBlendingSettings.DisableTerrainVertexColors)
 		input.Color.xyz = 1;
 
@@ -652,14 +650,14 @@ PS_OUTPUT main(PS_INPUT input)
 		dirDetailedShadow = shadowColor.x;
 	dirDetailedShadow += ShadowClampValue * (1.0 - dirDetailedShadow);
 
-#		if defined(SCREEN_SPACE_SHADOWS)
+#			if defined(SCREEN_SPACE_SHADOWS)
 	if (!SharedData::InInterior)
 		dirDetailedShadow *= ScreenSpaceShadows::GetScreenSpaceShadow(input.HPosition.xyz, screenUV, screenNoise);
-#		endif  // SCREEN_SPACE_SHADOWS
+#			endif  // SCREEN_SPACE_SHADOWS
 
 	float3 diffuseColor = dirLightColor * dirDetailedShadow * input.DirLightAngle;
 
-#		if defined(LIGHT_LIMIT_FIX)
+#			if defined(LIGHT_LIMIT_FIX)
 	uint clusterIndex = 0;
 	uint lightCount = 0;
 
@@ -676,17 +674,17 @@ PS_OUTPUT main(PS_INPUT input)
 				float3 lightDirection = light.positionWS.xyz - input.WorldPosition.xyz;
 				float lightDist = length(lightDirection);
 
-#			if defined(ISL)
+#				if defined(ISL)
 				float intensityMultiplier = InverseSquareLighting::GetAttenuation(lightDist, light);
 				if (intensityMultiplier < 1e-5)
 					continue;
-#			else
+#				else
 				float intensityFactor = saturate(lightDist / light.radius);
 				if (intensityFactor == 1)
 					continue;
 
 				float intensityMultiplier = 1 - intensityFactor * intensityFactor;
-#			endif
+#				endif
 
 				const bool isPointLightLinear = light.lightFlags & LightLimitFix::LightFlags::Linear;
 				float3 lightColor = Color::PointLight(light.color.xyz, isPointLightLinear) * intensityMultiplier * light.fade;
@@ -705,7 +703,7 @@ PS_OUTPUT main(PS_INPUT input)
 			}
 		}
 	}
-#		endif  // LIGHT_LIMIT_FIX
+#			endif  // LIGHT_LIMIT_FIX
 
 	float3 ddx = ddx_coarse(input.ViewSpacePosition);
 	float3 ddy = ddy_coarse(input.ViewSpacePosition);
@@ -716,23 +714,23 @@ PS_OUTPUT main(PS_INPUT input)
 	float vertexAO = max(max(vertexColor.r, vertexColor.g), vertexColor.b);
 	vertexColor /= max(vertexAO, EPSILON_DIVISION);
 
-#		if defined(SKYLIGHTING)
+#			if defined(SKYLIGHTING)
 	float3 positionMSSkylight = input.WorldPosition.xyz;
 	sh2 skylightingSH = Skylighting::Sample(positionMSSkylight, normal
-#			if defined(SKYLIGHTING_SHADOW_VIS)
+#				if defined(SKYLIGHTING_SHADOW_VIS)
 		,
 		skylightingShadowVisibility
-#			endif
+#				endif
 	);
 	float skylightingDiffuse = Skylighting::GetSkylightingDiffuse(skylightingSH, positionMSSkylight, normal, vertexAO);
-#		endif  // SKYLIGHTING
+#			endif  // SKYLIGHTING
 
 	float3 directionalAmbientColor = Color::Ambient(max(0, AmbientColor.xyz));
 
-#		if defined(IBL)
+#			if defined(IBL)
 	if (SharedData::iblSettings.EnableIBL)
 		directionalAmbientColor = ImageBasedLighting::GetDiffuseIBL(directionalAmbientColor, -normal);
-#		endif
+#			endif
 
 	float3 albedo = baseColor.xyz * vertexColor;
 
@@ -741,9 +739,9 @@ PS_OUTPUT main(PS_INPUT input)
 	diffuseColor *= albedo;
 	directionalAmbientColor *= albedo;
 
-#		if defined(SKYLIGHTING)
+#			if defined(SKYLIGHTING)
 	Skylighting::ApplySkylighting(diffuseColor, directionalAmbientColor, albedo, skylightingDiffuse);
-#		endif
+#			endif
 
 	psout.Diffuse.xyz = FogNearColor.w * diffuseColor;
 
@@ -756,10 +754,10 @@ PS_OUTPUT main(PS_INPUT input)
 	psout.Albedo = float4(albedo, 1);
 	psout.Masks = float4(0, 0, Color::RGBToYCoCg(directionalAmbientColor).x, 0);
 	psout.Masks2 = float4(1.0 - vertexAO, 0, 0, 0);
-#	endif
+#		endif
 
 	return psout;
 }
-#endif
+#	endif
 
 #endif  // PSHADER
